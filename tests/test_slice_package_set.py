@@ -189,3 +189,27 @@ def test_from_orthogonal_triplet_builds_the_classic_3_plane_view(make_image):
 
     with pytest.raises(ValueError, match="more than once"):
         SlicePackageSet.from_orthogonal_triplet(img, {"x": 0, "sagittal": 1})
+
+
+def test_from_slice_packages_builds_a_set_from_an_unnamed_list_or_a_single_package():
+    base = SliceGeometry([0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1], [3, 3])
+    pkg1 = SlicePackage(base_slice=base, spacing_k=1, size_k=2)
+    pkg2 = SlicePackage(base_slice=base, spacing_k=1, size_k=3)
+
+    sset = SlicePackageSet.from_slice_packages([pkg1, pkg2])
+    assert sset.package_names == ["package_1", "package_2"]
+    assert len(sset.sample_points) == 9 * 2 + 9 * 3
+
+    # a single SlicePackage, not wrapped in a list
+    sset_single = SlicePackageSet.from_slice_packages(pkg1)
+    assert sset_single.package_names == ["package_1"]
+    assert len(sset_single.sample_points) == 9 * 2
+
+    # a single bare SliceGeometry, auto-wrapped as size_k = 1
+    sset_slice = SlicePackageSet.from_slice_packages(base)
+    assert sset_slice.packages["package_1"].size_k == 1
+
+    # a mixed list of SlicePackage and bare SliceGeometry
+    sset_mixed = SlicePackageSet.from_slice_packages([pkg1, base])
+    assert sset_mixed.package_names == ["package_1", "package_2"]
+    assert sset_mixed.packages["package_2"].size_k == 1

@@ -164,8 +164,8 @@ def test_from_slices_adopts_a_list_of_prebuilt_parallel_slices():
     assert pkg.size_k == 4
     assert np.allclose(pkg.base_slice.origin, base.origin)
 
-    with pytest.raises(ValueError, match="at least 2"):
-        SlicePackage.from_slices([base])
+    with pytest.raises(ValueError, match="at least 1"):
+        SlicePackage.from_slices([])
     with pytest.raises(ValueError, match="SliceGeometry"):
         SlicePackage.from_slices([base, "not a slice"])
 
@@ -183,6 +183,23 @@ def test_from_slices_adopts_a_list_of_prebuilt_parallel_slices():
     off_axis[1] = off_axis[1].translate([0.1, 0, 0])
     with pytest.raises(ValueError, match="aligned along the shared normal"):
         SlicePackage.from_slices(off_axis)
+
+
+def test_from_slices_supports_a_single_slice_given_an_explicit_spacing_k():
+    base = base_slice()
+
+    with pytest.raises(ValueError, match="spacing_k.*must be supplied explicitly"):
+        SlicePackage.from_slices([base])
+
+    pkg = SlicePackage.from_slices([base], spacing_k=2)
+    assert pkg.size_k == 1
+    assert pkg.spacing_k == 2
+    assert np.allclose(pkg.base_slice.origin, base.origin)
+
+    # spacing_k is ignored (derived from the data instead) once there are >= 2 slices
+    slices = [base.translate(k * 2 * base.normal) for k in range(4)]
+    pkg2 = SlicePackage.from_slices(slices, spacing_k=999)
+    assert pkg2.spacing_k == 2
 
 
 def test_from_image_axis_spans_the_whole_image_at_its_own_resolution(make_image):
