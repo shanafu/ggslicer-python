@@ -12,7 +12,8 @@ dependencies = [
     "SimpleITK",
     "numpy",
     "pandas",
-    "tqdm"
+    "tqdm",
+    "contourpy"
 ]
 
 [tool.setuptools]
