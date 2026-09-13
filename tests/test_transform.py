@@ -1,0 +1,167 @@
+import os
+
+import numpy as np
+import pandas as pd
+import pytest
+import SimpleITK as sitk
+
+from ggslicer import transform_points, read_minc_transform
+
+
+def test_transform_points_applies_a_translation_transform_exactly():
+    df = pd.DataFrame({"x": [0, 1, 2], "y": [0, 0, 0], "z": [0, 0, 0], "label": ["a", "b", "c"]})
+    t = sitk.TranslationTransform(3, (10, 5, -2))
+    out = transform_points(df, t)
+
+    assert list(out["x"]) == [10, 11, 12]
+    assert list(out["y"]) == [5, 5, 5]
+    assert list(out["z"]) == [-2, -2, -2]
+    assert list(out["label"]) == list(df["label"])
+
+
+def test_transform_points_with_invert_applies_the_inverse_transform():
+    df = pd.DataFrame({"x": [10], "y": [5], "z": [-2]})
+    t = sitk.TranslationTransform(3, (10, 5, -2))
+    out = transform_points(df, t, invert=True)
+    assert np.allclose([out["x"][0], out["y"][0], out["z"][0]], [0, 0, 0])
+
+
+def test_transform_points_errors_clearly_when_inverting_a_displacement_field_transform():
+    vec_img = sitk.Image([3, 3, 3], sitk.sitkVectorFloat64, 3)
+    t = sitk.DisplacementFieldTransform(vec_img)
+    df = pd.DataFrame({"x": [0], "y": [0], "z": [0]})
+    with pytest.raises(RuntimeError):
+        transform_points(df, t, invert=True)
+
+
+def test_transform_points_accepts_a_transform_given_as_a_file_path(tmp_path):
+    t = sitk.TranslationTransform(3, (1, 2, 3))
+    path = str(tmp_path / "t.tfm")
+    sitk.WriteTransform(t, path)
+
+    df = pd.DataFrame({"x": [0], "y": [0], "z": [0]})
+    out = transform_points(df, path)
+    assert np.allclose([out["x"][0], out["y"][0], out["z"][0]], [1, 2, 3])
+
+
+def test_transform_points_respects_custom_column_names():
+    df = pd.DataFrame({"px": [0], "py": [0], "pz": [0], "other": ["kept"]})
+    t = sitk.TranslationTransform(3, (1, 2, 3))
+    out = transform_points(df, t, x_col="px", y_col="py", z_col="pz")
+    assert np.allclose([out["px"][0], out["py"][0], out["pz"][0]], [1, 2, 3])
+    assert out["other"][0] == "kept"
+
+
+def _write_test_xfm(path, body_lines):
+    with open(path, "w") as f:
+        f.write("MNI Transform File\n%test\n\n")
+        f.write("\n".join(body_lines) + "\n")
+
+
+def test_read_minc_transform_parses_a_single_linear_block(tmp_path):
+    path = str(tmp_path / "t.xfm")
+    _write_test_xfm(path, [
+        "Transform_Type = Linear;",
+        "Linear_Transform =",
+        " 1 0 0 5",
+        " 0 1 0 6",
+        " 0 0 1 7;",
+    ])
+
+    t = read_minc_transform(path)
+    out = t.TransformPoint((0, 0, 0))
+    assert np.allclose(out, [5, 6, 7])
+
+
+def test_read_minc_transform_parses_a_single_grid_transform_block(tmp_path):
+    grid_path = str(tmp_path / "grid.mnc")
+    vec_img = sitk.Image([3, 3, 3], sitk.sitkVectorFloat64, 3)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                vec_img.SetPixel((i, j, k), (1.0, 2.0, 3.0))
+    sitk.WriteImage(vec_img, grid_path)
+
+    xfm_path = str(tmp_path / "test.xfm")
+    _write_test_xfm(xfm_path, [
+        "Transform_Type = Grid_Transform;",
+        "Displacement_Volume = grid.mnc;",
+    ])
+
+    t = read_minc_transform(xfm_path)
+    out = t.TransformPoint((0, 0, 0))
+    assert np.allclose(out, [1, 2, 3])
+
+
+def test_read_minc_transform_concatenates_multiple_blocks_in_the_correct_order(tmp_path):
+    grid_path = str(tmp_path / "grid.mnc")
+    vec_img = sitk.Image([3, 3, 3], sitk.sitkVectorFloat64, 3)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                vec_img.SetPixel((i, j, k), (100.0, 0.0, 0.0))
+    sitk.WriteImage(vec_img, grid_path)
+
+    xfm_path = str(tmp_path / "test.xfm")
+    _write_test_xfm(xfm_path, [
+        "Transform_Type = Linear;",
+        "Linear_Transform =",
+        " 2 0 0 0",
+        " 0 2 0 0",
+        " 0 0 2 0;",
+        "Transform_Type = Grid_Transform;",
+        "Displacement_Volume = grid.mnc;",
+    ])
+
+    t = read_minc_transform(xfm_path)
+    assert isinstance(t, sitk.CompositeTransform)
+
+    # file order [Linear, Grid]: apply linear (scale by 2) first, then grid (+100 in x)
+    out = t.TransformPoint((1, 0, 0))
+    assert np.allclose(out, [102, 0, 0])
+
+
+def test_read_minc_transform_resolves_displacement_volume_relative_to_xfm_directory(tmp_path):
+    vec_img = sitk.Image([2, 2, 2], sitk.sitkVectorFloat64, 3)
+    sitk.WriteImage(vec_img, str(tmp_path / "somegrid.mnc"))
+
+    xfm_path = str(tmp_path / "test.xfm")
+    _write_test_xfm(xfm_path, [
+        "Transform_Type = Grid_Transform;",
+        "Displacement_Volume = somegrid.mnc;",
+    ])
+
+    read_minc_transform(xfm_path)  # should not raise
+
+
+def test_read_minc_transform_errors_clearly_on_malformed_or_unsupported_input(tmp_path):
+    not_an_xfm = str(tmp_path / "not.xfm")
+    with open(not_an_xfm, "w") as f:
+        f.write("not a transform file")
+    with pytest.raises(ValueError):
+        read_minc_transform(not_an_xfm)
+
+    bad_linear = str(tmp_path / "bad.xfm")
+    _write_test_xfm(bad_linear, ["Transform_Type = Linear;", "Linear_Transform =", " 1 2 3;"])
+    with pytest.raises(ValueError):
+        read_minc_transform(bad_linear)
+
+    unsupported = str(tmp_path / "unsupported.xfm")
+    _write_test_xfm(unsupported, ["Transform_Type = Thin_Plate_Spline_Transform;"])
+    with pytest.raises(ValueError, match="Unsupported"):
+        read_minc_transform(unsupported)
+
+
+def test_transform_points_routes_xfm_paths_through_read_minc_transform(tmp_path):
+    path = str(tmp_path / "t.xfm")
+    _write_test_xfm(path, [
+        "Transform_Type = Linear;",
+        "Linear_Transform =",
+        " 1 0 0 1",
+        " 0 1 0 2",
+        " 0 0 1 3;",
+    ])
+
+    df = pd.DataFrame({"x": [0], "y": [0], "z": [0]})
+    out = transform_points(df, path)
+    assert np.allclose([out["x"][0], out["y"][0], out["z"][0]], [1, 2, 3])
