@@ -1,6 +1,8 @@
 import SimpleITK
 from pathlib import Path
 
+from ._utils import check_sitk_image
+
 def orientation_correction(image):
     flip_filter = SimpleITK.FlipImageFilter()
 
@@ -51,6 +53,8 @@ def ReadImage_fix(file):
 
 
 def WriteImage_fix(image, output_file):
+    check_sitk_image(image)
+
     # Check metadata
     original_file_type_meta = image.HasMetaDataKey("OriginalFileType")
     was_original_minc = False
