@@ -25,7 +25,7 @@ import SimpleITK as sitk
 
 from ._utils import check_sitk_image
 from .geometry import SliceGeometry, SlicePackage, SlicePackageSet
-from .readwrite import ReadImage_fix
+from .io import ReadImage_fix
 
 _TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 

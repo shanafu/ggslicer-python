@@ -21,7 +21,7 @@ import SimpleITK as sitk
 
 from ._utils import check_sitk_image
 from .api import _as_slice_package_set, build_slice_geometry
-from .readwrite import ReadImage_fix
+from .io import ReadImage_fix
 
 
 def _slice_intensity_matrix(values, n_i, n_j):
@@ -38,6 +38,7 @@ def _slice_intensity_matrix(values, n_i, n_j):
 
 
 def _apply_mask_fill(values, mask_values, mask_fill):
+    """Zero-fill or NaN-fill entries of `values` where `mask_values` < 0.5."""
     values = np.array(values, dtype=float, copy=True)
     mask_values = np.asarray(mask_values)
     excluded = ~np.isnan(mask_values) & (mask_values < 0.5)
@@ -46,6 +47,7 @@ def _apply_mask_fill(values, mask_values, mask_fill):
 
 
 def _contour_path_to_world(path_xy, slice_geom):
+    """Map a contourpy path's local (i, j) plane coordinates to world coordinates."""
     origin = slice_geom.origin
     di = slice_geom.direction_i
     dj = slice_geom.direction_j
@@ -53,6 +55,10 @@ def _contour_path_to_world(path_xy, slice_geom):
 
 
 def _resolve_contour_inputs(image, axis, coordinate, mask, geometry):
+    """Validate the shared geometry/axis/coordinate/image/mask arguments
+    common to slice_contours()/slice_label_contours(), resolving `image`/
+    `mask` from paths if needed. Returns (image, mask, package_set).
+    """
     has_geometry = geometry is not None
     if has_geometry and (axis is not None or coordinate is not None):
         raise ValueError("axis/coordinate must not be supplied together with geometry.")
@@ -74,6 +80,11 @@ def _resolve_contour_inputs(image, axis, coordinate, mask, geometry):
 
 
 def _extract_contours(image, mask, package_set, mask_fill, levels=None, binarize_fn=None):
+    """Shared per-package/per-slice contour-extraction loop, used by both
+    slice_contours() (binarize_fn=None, contours `image` directly at each of
+    `levels`) and slice_label_contours() (binarize_fn given, contours each
+    label's binary indicator at 0.5). Returns a list of per-path DataFrames.
+    """
     rows = []
 
     for pkg_name, pkg in package_set.packages.items():
@@ -123,6 +134,11 @@ def _extract_contours(image, mask, package_set, mask_fill, levels=None, binarize
 
 
 def _finalize_contours_df(rows, group_cols, min_vertices, empty_extra_col):
+    """Concatenate per-path DataFrames, drop paths shorter than
+    `min_vertices` (grouped by `group_cols`), and sort by `group_cols` +
+    `vertex`. `empty_extra_col` ("level" or "label") names the empty
+    DataFrame's columns when `rows` is empty.
+    """
     if not rows:
         cols = ["package", "k", empty_extra_col, "obj", "vertex", "x", "y", "z"]
         return pd.DataFrame({c: [] for c in cols})
@@ -258,6 +274,9 @@ def slice_label_contours(image, axis=None, coordinate=None, labels=None,
     image, mask, package_set = _resolve_contour_inputs(image, axis, coordinate, mask, geometry)
 
     def binarize_fn(vals):
+        """Round `vals` to integer labels and return {label: binary indicator}
+        for each present, nonzero label (restricted to `labels` if given).
+        """
         vals = np.round(vals)
         present = np.unique(vals[~np.isnan(vals)])
         present = present[present != 0]

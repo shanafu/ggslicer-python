@@ -36,10 +36,14 @@ _ORTHONORMAL_TOL = 1e-6
 
 
 def _is_scalar(x):
+    """True if `x` is a 0-dimensional value (a plain number, not an array)."""
     return np.ndim(x) == 0
 
 
 def _validate_direction(direction_i, direction_j, tol=_ORTHONORMAL_TOL):
+    """Validate that direction_i/direction_j are unit vectors and orthogonal.
+    Returns them as numpy arrays.
+    """
     direction_i = np.asarray(direction_i, dtype=float)
     direction_j = np.asarray(direction_j, dtype=float)
     if direction_i.shape != (3,):
@@ -148,28 +152,33 @@ class SliceGeometry:
     # ---- internal validated setters ----
 
     def _set_origin(self, origin):
+        """Validate and assign `origin` (length-3 vector)."""
         origin = np.asarray(origin, dtype=float)
         if origin.shape != (3,):
             raise ValueError("origin must be a length-3 vector.")
         self._origin = origin
 
     def _set_direction(self, direction_i, direction_j):
+        """Validate (via `_validate_direction`) and assign the direction basis."""
         di, dj = _validate_direction(direction_i, direction_j)
         self._direction = np.column_stack([di, dj])  # shape (3, 2): rows x,y,z; cols i,j
 
     def _set_spacing(self, spacing):
+        """Validate and assign `spacing` (length-2 vector, both entries > 0)."""
         spacing = np.asarray(spacing, dtype=float)
         if spacing.shape != (2,) or np.any(spacing <= 0):
             raise ValueError("spacing must be a length-2 vector with both entries > 0.")
         self._spacing = spacing
 
     def _set_size(self, size):
+        """Validate and assign `size` (integer-valued length-2 vector, both entries >= 1)."""
         size = np.asarray(size, dtype=float)
         if size.shape != (2,) or np.any(size < 1) or np.any(size != np.round(size)):
             raise ValueError("size must be an integer-valued length-2 vector with both entries >= 1.")
         self._size = size.astype(int)
 
     def _invalidate_cache(self):
+        """Clear the memoized sample-points cache after a geometry change."""
         self._sample_points_cache = None
 
     # ---- read-only derived properties ----
@@ -740,6 +749,7 @@ class SliceGeometry:
             )
 
         def corner_xyz(label):
+            """Return the (x, y, z) numpy array for the row labeled `label`."""
             row = bounds.loc[bounds["corner"] == label, ["x", "y", "z"]]
             if len(row) != 1:
                 raise ValueError(f'bounds must have exactly one row for corner "{label}".')
@@ -786,6 +796,7 @@ class SliceGeometry:
         return cls(origin=p00, direction_i=direction_i, direction_j=direction_j, spacing=spacing, size=size)
 
     def __repr__(self):
+        """A machine-readable, reconstructable representation."""
         return (
             f"SliceGeometry(origin={self._origin.tolist()}, "
             f"direction_i={self.direction_i.tolist()}, direction_j={self.direction_j.tolist()}, "
@@ -793,6 +804,7 @@ class SliceGeometry:
         )
 
     def __str__(self):
+        """A short, human-readable summary of the slice's geometry."""
         lines = [
             "<SliceGeometry>",
             f"  origin:      {', '.join(str(v) for v in np.round(self._origin, 4))}",
@@ -837,21 +849,25 @@ class SlicePackage:
         self._sample_points_cache = None
 
     def _set_base_slice(self, base_slice):
+        """Validate and assign the k=0 slice (must be a SliceGeometry)."""
         if not isinstance(base_slice, SliceGeometry):
             raise ValueError("base_slice must be a SliceGeometry object.")
         self._base_slice = base_slice
 
     def _set_spacing_k(self, spacing_k):
+        """Validate and assign spacing_k (single number > 0)."""
         if not _is_scalar(spacing_k) or spacing_k <= 0:
             raise ValueError("spacing_k must be a single number > 0.")
         self._spacing_k = float(spacing_k)
 
     def _set_size_k(self, size_k):
+        """Validate and assign size_k (single integer >= 1)."""
         if not _is_scalar(size_k) or size_k < 1 or size_k != round(size_k):
             raise ValueError("size_k must be a single integer >= 1.")
         self._size_k = int(size_k)
 
     def _invalidate_cache(self):
+        """Clear the memoized sample-points cache after a geometry change."""
         self._sample_points_cache = None
 
     # ---- properties ----
@@ -943,6 +959,7 @@ class SlicePackage:
         return self._base_slice.translate(k * self._spacing_k * self.normal)
 
     def __getitem__(self, k):
+        """Alias for `get_slice(k)`."""
         return self.get_slice(k)
 
     @property
@@ -1186,9 +1203,11 @@ class SlicePackage:
         return cls(base_slice=base, spacing_k=spacing_full[axis_index], size_k=size_full[axis_index])
 
     def __repr__(self):
+        """A machine-readable, reconstructable representation."""
         return f"SlicePackage(base_slice={self._base_slice!r}, spacing_k={self._spacing_k}, size_k={self._size_k})"
 
     def __str__(self):
+        """A short, human-readable summary of the package's geometry."""
         lines = [
             "<SlicePackage>",
             f"  size:         {', '.join(str(v) for v in self.size)}",
@@ -1247,6 +1266,9 @@ class SlicePackageSet:
         self._set_packages(packages if packages is not None else {})
 
     def _set_packages(self, packages):
+        """Validate and assign the name -> SlicePackage/SliceGeometry dict,
+        coercing bare SliceGeometry values to single-slice SlicePackages.
+        """
         if not hasattr(packages, "items"):
             raise ValueError("packages must be a dict of SlicePackage/SliceGeometry objects.")
         if any((not isinstance(k, str)) or (not k) for k in packages):
@@ -1476,9 +1498,11 @@ class SlicePackageSet:
         return cls(named)
 
     def __repr__(self):
+        """A machine-readable, reconstructable representation."""
         return f"SlicePackageSet(packages={self.package_names!r})"
 
     def __str__(self):
+        """A short, human-readable summary of every package in the set."""
         lines = ["<SlicePackageSet>", f"  {len(self._packages)} package(s)"]
         if self._packages:
             name_width = max(len(n) for n in self._packages)

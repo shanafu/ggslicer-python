@@ -17,7 +17,7 @@ from plotnine import aes, geom_path
 
 from ._utils import check_sitk_image
 from .api import _as_slice_package_set, build_slice_geometry
-from .readwrite import ReadImage_fix
+from .io import ReadImage_fix
 
 
 def _seq_by(start, end, by):
@@ -69,6 +69,10 @@ def _slice_grid_lines(slice_geom, spacing, point_spacing, padding):
     dj = slice_geom.direction_j
 
     def build_lines_for_axis(grid_axis, grid_coords, part):
+        """Build one line (a DataFrame of points) per coordinate in
+        `grid_coords`, each fixed at that coordinate along `grid_axis` and
+        spanning the full (padded) extent of the other in-plane axis.
+        """
         line_extent_len = extent[1] if grid_axis == "i" else extent[0]
         line_start = 0 - padding
         line_end = line_extent_len + padding
@@ -212,6 +216,9 @@ def slice_grid_layers(grid_df,
         maps x/y via its own `aes()`.
     """
     def _with_group_column(df_part):
+        """Add a `_line_group` column identifying each distinct line, for
+        `aes(group=...)` in the returned geom_path layer.
+        """
         df_part = df_part.copy()
         df_part["_line_group"] = (
             df_part["package"].astype(str) + "|" +
