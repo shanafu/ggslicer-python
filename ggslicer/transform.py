@@ -8,6 +8,7 @@ import os
 import re
 
 import SimpleITK as sitk
+from tqdm import tqdm
 
 
 def _read_transform_file(path):
@@ -126,6 +127,10 @@ def transform_points(df, transform, invert=False, x_col="x", y_col="y", z_col="z
     (or contour, or any point set) on the fixed/reference image, then
     transform its points through the registration transform.
 
+    Transforms one point at a time (SimpleITK has no vectorized/batch
+    transform-point API), so this can take a while for a large DataFrame --
+    progress is reported via `tqdm`.
+
     Parameters
     ----------
     df : pandas.DataFrame
@@ -163,7 +168,7 @@ def transform_points(df, transform, invert=False, x_col="x", y_col="y", z_col="z
     new_x = [0.0] * len(out)
     new_y = [0.0] * len(out)
     new_z = [0.0] * len(out)
-    for i in range(len(out)):
+    for i in tqdm(range(len(out))):
         p = transform.TransformPoint((xs[i], ys[i], zs[i]))
         new_x[i], new_y[i], new_z[i] = p
 
