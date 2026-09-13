@@ -30,6 +30,8 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
+from ._utils import check_sitk_image
+
 _ORTHONORMAL_TOL = 1e-6
 
 
@@ -70,6 +72,17 @@ def _resolve_axis_index(axis):
     already-resolved index back into it. (The R version's resolver is
     1-indexed both in and out, so it is safely idempotent; this asymmetry is
     Python-specific.)
+
+    Parameters
+    ----------
+    axis : int or str
+        1/2/3, "x"/"y"/"z", or "sagittal"/"coronal"/"axial"/"horizontal"
+        (case-insensitive).
+
+    Returns
+    -------
+    int
+        0, 1, or 2.
     """
     if isinstance(axis, numbers.Real) and not isinstance(axis, bool):
         if axis not in (1, 2, 3):
@@ -106,6 +119,26 @@ class SliceGeometry:
     """
 
     def __init__(self, origin, direction_i, direction_j, spacing, size):
+        """Create a new SliceGeometry.
+
+        Parameters
+        ----------
+        origin : array-like of float, length 3
+            World coordinates of sample (i=0, j=0).
+        direction_i : array-like of float, length 3
+            World-space unit vector for the i axis.
+        direction_j : array-like of float, length 3
+            World-space unit vector for the j axis. Must be orthogonal to
+            `direction_i`.
+        spacing : array-like of float, length 2
+            Step size along (i, j). Both entries must be > 0.
+        size : array-like of int, length 2
+            Number of samples along (i, j). Both entries must be >= 1.
+
+        Returns
+        -------
+        None
+        """
         self._set_origin(origin)
         self._set_direction(direction_i, direction_j)
         self._set_spacing(spacing)
@@ -143,30 +176,38 @@ class SliceGeometry:
 
     @property
     def direction(self):
-        """The 3x2 direction matrix (columns i, j; rows x, y, z)."""
+        """numpy.ndarray: The 3x2 direction matrix (columns i, j; rows x, y, z)."""
         return self._direction.copy()
 
     @property
     def direction_i(self):
+        """numpy.ndarray: World-space unit vector for the i axis, length 3."""
         return self._direction[:, 0].copy()
 
     @property
     def direction_j(self):
+        """numpy.ndarray: World-space unit vector for the j axis, length 3."""
         return self._direction[:, 1].copy()
 
     @property
     def normal(self):
-        """Unit normal vector of the slice's plane (direction_i x direction_j)."""
+        """numpy.ndarray: Unit normal vector of the slice's plane (direction_i x direction_j), length 3."""
         return np.cross(self._direction[:, 0], self._direction[:, 1])
 
     @property
     def plane(self):
-        """The infinite plane this slice lies on, independent of its finite extent."""
+        """dict: The infinite plane this slice lies on, independent of its
+        finite extent -- keys ``"point"`` (length-3 vector) and ``"normal"``
+        (length-3 unit vector).
+        """
         return {"point": self._origin.copy(), "normal": self.normal}
 
     @property
     def bounds(self):
-        """World coordinates of the 4 corners of the sampling rectangle, as a DataFrame."""
+        """pandas.DataFrame: World coordinates of the 4 corners of the
+        sampling rectangle. Columns: ``corner`` (one of ``"i0_j0"``,
+        ``"i1_j0"``, ``"i0_j1"``, ``"i1_j1"``), ``x``, ``y``, ``z``.
+        """
         extent = self.extent
         di, dj = self._direction[:, 0], self._direction[:, 1]
         corners = np.stack([
@@ -182,9 +223,11 @@ class SliceGeometry:
 
     @property
     def sample_points(self):
-        """Physical coordinates of every sample point, as a DataFrame with
-        columns i, j, x, y, z. i/j are 0-indexed. Memoized; recomputed only
-        after a property/method changes the geometry.
+        """pandas.DataFrame: Physical coordinates of every sample point.
+
+        Columns ``i``, ``j`` (int, 0-indexed) and ``x``, ``y``, ``z``
+        (float, world coordinates), one row per sample point. Memoized;
+        recomputed only after a property/method changes the geometry.
         """
         if self._sample_points_cache is not None:
             return self._sample_points_cache
@@ -207,6 +250,7 @@ class SliceGeometry:
 
     @property
     def origin(self):
+        """numpy.ndarray: World coordinates of sample (i=0, j=0), length 3. Settable."""
         return self._origin.copy()
 
     @origin.setter
@@ -216,6 +260,7 @@ class SliceGeometry:
 
     @property
     def spacing(self):
+        """numpy.ndarray: Step size along (i, j), length 2. Settable."""
         return self._spacing.copy()
 
     @spacing.setter
@@ -225,6 +270,7 @@ class SliceGeometry:
 
     @property
     def size(self):
+        """numpy.ndarray: Number of samples along (i, j), length 2 (int). Settable."""
         return self._size.copy()
 
     @size.setter
@@ -236,7 +282,9 @@ class SliceGeometry:
 
     @property
     def extent(self):
-        """Physical extent (width, height): spacing * (size - 1)."""
+        """numpy.ndarray: Physical extent (width, height): spacing * (size - 1).
+        Settable (equivalent to ``set_extent(value, adjust="spacing")``).
+        """
         return self._spacing * (self._size - 1)
 
     @extent.setter
@@ -245,7 +293,9 @@ class SliceGeometry:
 
     @property
     def center(self):
-        """World coordinates of the grid's midpoint."""
+        """numpy.ndarray: World coordinates of the grid's midpoint, length 3.
+        Settable (equivalent to ``set_center(value)``).
+        """
         extent = self.extent
         return (
             self._origin
@@ -263,29 +313,84 @@ class SliceGeometry:
         """Update the in-plane direction basis (both vectors at once -- they
         are jointly constrained to stay orthonormal, so no per-axis setter
         is provided).
+
+        Parameters
+        ----------
+        direction_i : array-like of float, length 3
+            Unit vector, orthogonal to `direction_j`.
+        direction_j : array-like of float, length 3
+            Unit vector, orthogonal to `direction_i`.
+
+        Returns
+        -------
+        None
         """
         self._set_direction(direction_i, direction_j)
         self._invalidate_cache()
 
     def set_spacing_i(self, spacing_i):
+        """Update the step size along i only.
+
+        Parameters
+        ----------
+        spacing_i : float
+            Single number, > 0.
+
+        Returns
+        -------
+        None
+        """
         if not _is_scalar(spacing_i) or spacing_i <= 0:
             raise ValueError("spacing_i must be a single number > 0.")
         self._set_spacing([spacing_i, self._spacing[1]])
         self._invalidate_cache()
 
     def set_spacing_j(self, spacing_j):
+        """Update the step size along j only.
+
+        Parameters
+        ----------
+        spacing_j : float
+            Single number, > 0.
+
+        Returns
+        -------
+        None
+        """
         if not _is_scalar(spacing_j) or spacing_j <= 0:
             raise ValueError("spacing_j must be a single number > 0.")
         self._set_spacing([self._spacing[0], spacing_j])
         self._invalidate_cache()
 
     def set_size_i(self, size_i):
+        """Update the sample count along i only.
+
+        Parameters
+        ----------
+        size_i : int
+            Single integer, >= 1.
+
+        Returns
+        -------
+        None
+        """
         if not _is_scalar(size_i) or size_i < 1 or size_i != round(size_i):
             raise ValueError("size_i must be a single integer >= 1.")
         self._set_size([size_i, self._size[1]])
         self._invalidate_cache()
 
     def set_size_j(self, size_j):
+        """Update the sample count along j only.
+
+        Parameters
+        ----------
+        size_j : int
+            Single integer, >= 1.
+
+        Returns
+        -------
+        None
+        """
         if not _is_scalar(size_j) or size_j < 1 or size_j != round(size_j):
             raise ValueError("size_j must be a single integer >= 1.")
         self._set_size([self._size[0], size_j])
@@ -297,8 +402,17 @@ class SliceGeometry:
 
         Parameters
         ----------
-        extent : array-like of length 2
+        extent : array-like of float, length 2
+            Non-negative.
         adjust : {"spacing", "size"}
+            Which field to derive: "spacing" (default, changes resolution to
+            fit the new extent at the current sample count) or "size"
+            (changes sample count to fit the new extent at the current
+            resolution).
+
+        Returns
+        -------
+        None
         """
         if adjust not in ("spacing", "size"):
             raise ValueError('adjust must be "spacing" or "size".')
@@ -319,6 +433,14 @@ class SliceGeometry:
     def set_center(self, center):
         """Reposition the rectangle so its midpoint is at `center`, keeping
         direction, spacing, and size unchanged (updates origin).
+
+        Parameters
+        ----------
+        center : array-like of float, length 3
+
+        Returns
+        -------
+        None
         """
         center = np.asarray(center, dtype=float)
         if center.shape != (3,):
@@ -335,6 +457,15 @@ class SliceGeometry:
     def translate(self, offset):
         """Return a new SliceGeometry, identical to this one but with its
         origin shifted by `offset`.
+
+        Parameters
+        ----------
+        offset : array-like of float, length 3
+
+        Returns
+        -------
+        SliceGeometry
+            A new, independent object.
         """
         offset = np.asarray(offset, dtype=float)
         if offset.shape != (3,):
@@ -351,6 +482,17 @@ class SliceGeometry:
         """Build a pixel-less, single-voxel-thick SimpleITK reference image
         whose geometry exactly matches this slice, suitable as the
         `referenceImage` argument to `sitk.Resample()`.
+
+        Parameters
+        ----------
+        spacing_k : float, optional
+            Spacing to assign to the synthetic third (normal) axis.
+            Arbitrary, since that axis has only one sample; defaults to 1.0.
+
+        Returns
+        -------
+        SimpleITK.Image
+            Size (n_i, n_j, 1), no pixel data set (all zeros).
         """
         direction_3x3 = np.column_stack([self._direction, self.normal])
         img = sitk.Image([int(self._size[0]), int(self._size[1]), 1], sitk.sitkFloat32)
@@ -373,6 +515,23 @@ class SliceGeometry:
         projected onto `direction_i` to get the extent along i, and
         `direction_j` is derived as the (automatically orthogonal)
         remainder, which also fixes the plane.
+
+        Parameters
+        ----------
+        p0 : array-like of float, length 3
+            World coordinates of the corner at (i=0, j=0).
+        p1 : array-like of float, length 3
+            World coordinates of the opposite corner, at (i=max, j=max).
+        direction_i : array-like of float, length 3
+            Unit vector, pointing from `p0` toward `p1` along the i axis.
+        spacing : array-like of float, length 2, optional
+            Step size along (i, j). Exactly one of `spacing`/`size` must be given.
+        size : array-like of int, length 2, optional
+            Number of samples along (i, j). Exactly one of `spacing`/`size` must be given.
+
+        Returns
+        -------
+        SliceGeometry
         """
         if (spacing is None) == (size is None):
             raise ValueError("Specify exactly one of `spacing` or `size`.")
@@ -418,6 +577,23 @@ class SliceGeometry:
     def from_center(cls, center, direction_i, direction_j, spacing, size):
         """Construct a SliceGeometry from its center point rather than its
         (i=0, j=0) corner.
+
+        Parameters
+        ----------
+        center : array-like of float, length 3
+            World coordinates of the rectangle's midpoint.
+        direction_i : array-like of float, length 3
+            World direction of the i axis.
+        direction_j : array-like of float, length 3
+            World direction of the j axis. Must be orthogonal to `direction_i`.
+        spacing : array-like of float, length 2
+            Step size along (i, j).
+        size : array-like of int, length 2
+            Number of samples along (i, j).
+
+        Returns
+        -------
+        SliceGeometry
         """
         s = cls(origin=np.zeros(3), direction_i=direction_i, direction_j=direction_j, spacing=spacing, size=size)
         s.set_center(center)
@@ -433,6 +609,24 @@ class SliceGeometry:
         y-axis if the normal is nearly parallel to x) is projected into the
         plane to pick one. If `direction_i` is supplied, it is projected the
         same way, so it need not already be exactly orthogonal to `normal`.
+
+        Parameters
+        ----------
+        origin : array-like of float, length 3
+            World coordinates of sample (i=0, j=0).
+        normal : array-like of float, length 3
+            Nonzero (need not be unit length).
+        spacing : array-like of float, length 2
+            Step size along (i, j).
+        size : array-like of int, length 2
+            Number of samples along (i, j).
+        direction_i : array-like of float, length 3, optional
+            Seed vector for the in-plane rotation; must not be parallel to
+            `normal`. Defaults to a world-axis seed.
+
+        Returns
+        -------
+        SliceGeometry
         """
         normal = np.asarray(normal, dtype=float)
         if normal.shape != (3,):
@@ -470,7 +664,23 @@ class SliceGeometry:
         The in-plane axes, their spacing, and their sample counts are taken
         directly from `image`'s own geometry; the out-of-plane position is
         snapped to the nearest voxel plane to `coordinate` along `axis`.
+
+        Parameters
+        ----------
+        image : SimpleITK.Image
+            A 3D image.
+        axis : int or str
+            Which image axis is out-of-plane: 1/2/3, "x"/"y"/"z", or (RAS+)
+            "sagittal"/"coronal"/"axial"/"horizontal".
+        coordinate : float
+            Desired world coordinate along `axis` (snapped to the nearest
+            voxel plane).
+
+        Returns
+        -------
+        SliceGeometry
         """
+        check_sitk_image(image)
         if image.GetDimension() != 3:
             raise ValueError("image must be a 3D image.")
         axis_index = _resolve_axis_index(axis)
@@ -512,6 +722,14 @@ class SliceGeometry:
             Columns `corner, x, y, z`, with rows labeled "i0_j0", "i1_j0",
             and "i0_j1" (as produced by `.bounds`). If an "i1_j1" row is also
             present, it is checked for consistency with the other three.
+        spacing : array-like of float, length 2, optional
+            Step size along (i, j). Exactly one of `spacing`/`size` must be given.
+        size : array-like of int, length 2, optional
+            Number of samples along (i, j). Exactly one of `spacing`/`size` must be given.
+
+        Returns
+        -------
+        SliceGeometry
         """
         if (spacing is None) == (size is None):
             raise ValueError("Specify exactly one of `spacing` or `size`.")
@@ -598,6 +816,21 @@ class SlicePackage:
     """
 
     def __init__(self, base_slice, spacing_k, size_k):
+        """Create a new SlicePackage.
+
+        Parameters
+        ----------
+        base_slice : SliceGeometry
+            The slice at k=0.
+        spacing_k : float
+            Step size along the normal direction. Must be > 0.
+        size_k : int
+            Number of parallel slices in the stack. Must be >= 1.
+
+        Returns
+        -------
+        None
+        """
         self._set_base_slice(base_slice)
         self._set_spacing_k(spacing_k)
         self._set_size_k(size_k)
@@ -625,10 +858,10 @@ class SlicePackage:
 
     @property
     def base_slice(self):
-        """A copy of the SliceGeometry at k=0. A copy (not the live internal
-        object) is returned so mutating it can't silently desynchronize this
-        package's cached sample points; assign to `.base_slice` to actually
-        change it.
+        """SliceGeometry: A copy of the slice at k=0. A copy (not the live
+        internal object) is returned so mutating it can't silently
+        desynchronize this package's cached sample points; assign to
+        `.base_slice` to actually change it. Settable.
         """
         return self._base_slice.translate(np.zeros(3))  # cheap, correct copy via the public API
 
@@ -639,6 +872,7 @@ class SlicePackage:
 
     @property
     def spacing_k(self):
+        """float: Step size along the normal (k) direction. Settable."""
         return self._spacing_k
 
     @spacing_k.setter
@@ -648,6 +882,7 @@ class SlicePackage:
 
     @property
     def size_k(self):
+        """int: Number of parallel slices in the stack. Settable."""
         return self._size_k
 
     @size_k.setter
@@ -657,7 +892,7 @@ class SlicePackage:
 
     @property
     def spacing(self):
-        """Full 3D spacing, (spacing_i, spacing_j, spacing_k)."""
+        """numpy.ndarray: Full 3D spacing, (spacing_i, spacing_j, spacing_k). Settable."""
         return np.append(self._base_slice.spacing, self._spacing_k)
 
     @spacing.setter
@@ -671,7 +906,7 @@ class SlicePackage:
 
     @property
     def size(self):
-        """Full 3D size, (n_i, n_j, n_k)."""
+        """numpy.ndarray: Full 3D size, (n_i, n_j, n_k). Settable."""
         return np.append(self._base_slice.size, self._size_k)
 
     @size.setter
@@ -685,11 +920,24 @@ class SlicePackage:
 
     @property
     def normal(self):
-        """Unit normal of the base slice's plane (shared by every slice in the stack)."""
+        """numpy.ndarray: Unit normal of the base slice's plane (shared by
+        every slice in the stack), length 3.
+        """
         return self._base_slice.normal
 
     def get_slice(self, k):
-        """The k-th SliceGeometry in the stack."""
+        """The k-th SliceGeometry in the stack.
+
+        Parameters
+        ----------
+        k : int
+            Single integer in `0:(size_k - 1)`.
+
+        Returns
+        -------
+        SliceGeometry
+            A new object.
+        """
         if not _is_scalar(k) or k != round(k) or k < 0 or k >= self._size_k:
             raise ValueError("k must be a single integer in 0:(size_k - 1).")
         return self._base_slice.translate(k * self._spacing_k * self.normal)
@@ -699,8 +947,9 @@ class SlicePackage:
 
     @property
     def sample_points(self):
-        """Physical coordinates of every sample point in the stack, as a
-        DataFrame with columns i, j, k, x, y, z. Memoized.
+        """pandas.DataFrame: Physical coordinates of every sample point in
+        the stack. Columns ``i``, ``j``, ``k`` (int, 0-indexed) and ``x``,
+        ``y``, ``z`` (float, world coordinates). Memoized.
         """
         if self._sample_points_cache is not None:
             return self._sample_points_cache
@@ -728,6 +977,11 @@ class SlicePackage:
         """Build a pixel-less 3D SimpleITK reference image spanning the
         whole stack in a single geometry, suitable as the `referenceImage`
         argument to `sitk.Resample()`.
+
+        Returns
+        -------
+        SimpleITK.Image
+            Size (n_i, n_j, n_k), no pixel data set (all zeros).
         """
         size = self.size
         spacing = self.spacing
@@ -743,7 +997,21 @@ class SlicePackage:
         """Resample a 3D SimpleITK image onto this stack's geometry in a
         single `sitk.Resample()` call, returning `sample_points` with an
         added `intensity` column (`NaN` outside the source image's bounds).
+
+        Parameters
+        ----------
+        image : SimpleITK.Image
+            A 3D image.
+        interpolator : SimpleITK interpolator constant, optional
+            e.g. `sitk.sitkLinear` (default) or `sitk.sitkNearestNeighbor`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `sample_points`'s columns (`i`, `j`, `k`, `x`, `y`, `z`) plus
+            `intensity` (float, `NaN` outside `image`'s bounds).
         """
+        check_sitk_image(image)
         if image.GetDimension() != 3:
             raise ValueError(
                 "image must be a 3D image; extract a spatial sub-volume first for "
@@ -767,6 +1035,20 @@ class SlicePackage:
     def from_extent_k(cls, base_slice, extent_k, size_k):
         """Construct a SlicePackage from a total stack thickness rather than
         a per-step spacing.
+
+        Parameters
+        ----------
+        base_slice : SliceGeometry
+            The slice at k=0.
+        extent_k : float
+            Total physical thickness of the stack (from the first to the
+            last slice). `spacing_k` is derived as `extent_k / (size_k - 1)`.
+        size_k : int
+            Number of parallel slices in the stack. Must be >= 2.
+
+        Returns
+        -------
+        SlicePackage
         """
         if not _is_scalar(size_k) or size_k < 2 or size_k != round(size_k):
             raise ValueError(
@@ -781,6 +1063,19 @@ class SlicePackage:
     def from_center_k(cls, center_slice, spacing_k, size_k):
         """Construct a SlicePackage treating the given slice as the *middle*
         of the stack, rather than as its first (k=0) slice.
+
+        Parameters
+        ----------
+        center_slice : SliceGeometry
+            The slice at the middle of the stack.
+        spacing_k : float
+            Step size along the normal direction. Must be > 0.
+        size_k : int
+            Number of parallel slices in the stack. Must be >= 1.
+
+        Returns
+        -------
+        SlicePackage
         """
         if not _is_scalar(spacing_k) or spacing_k <= 0:
             raise ValueError("spacing_k must be a single number > 0.")
@@ -791,21 +1086,45 @@ class SlicePackage:
         return cls(base_slice=base, spacing_k=spacing_k, size_k=size_k)
 
     @classmethod
-    def from_slices(cls, slices):
+    def from_slices(cls, slices, spacing_k=None):
         """Construct a SlicePackage by adopting a list of already-built,
         individually-defined SliceGeometry objects (e.g. one per DICOM
         slice), rather than generating a regular stack from a single base
         slice and a step size. Validates that every slice shares the same
         direction/spacing/size and that consecutive slices (in the order
         given) are evenly spaced along their shared normal.
+
+        Parameters
+        ----------
+        slices : list of SliceGeometry
+            1 or more slices, ordered from k=0 onward.
+        spacing_k : float, optional
+            Only used (and required) when `slices` has exactly one element,
+            where it cannot be inferred from the data (there is no second
+            slice to measure a gap against). Ignored when `slices` has 2 or
+            more elements, where `spacing_k` is always derived from their
+            spacing.
+
+        Returns
+        -------
+        SlicePackage
         """
         slices = list(slices)
-        if len(slices) < 2:
-            raise ValueError("slices must be a list of at least 2 SliceGeometry objects.")
+        if len(slices) < 1:
+            raise ValueError("slices must be a list of at least 1 SliceGeometry object.")
         if not all(isinstance(s, SliceGeometry) for s in slices):
             raise ValueError("Every element of slices must be a SliceGeometry object.")
 
         base = slices[0]
+
+        if len(slices) == 1:
+            if spacing_k is None:
+                raise ValueError(
+                    "spacing_k must be supplied explicitly when slices has only one element "
+                    "(there is no second slice to infer spacing from)."
+                )
+            return cls(base_slice=base, spacing_k=spacing_k, size_k=1)
+
         ref_direction = base.direction
         ref_spacing = base.spacing
         ref_size = base.size
@@ -839,7 +1158,20 @@ class SlicePackage:
         """Construct a SlicePackage spanning an entire 3D SimpleITK image
         along one of its axes, using the image's own resolution along that
         axis -- the SlicePackage equivalent of `SliceGeometry.from_image_axis()`.
+
+        Parameters
+        ----------
+        image : SimpleITK.Image
+            A 3D image.
+        axis : int or str
+            Which axis is the stacking (out-of-plane) direction: 1/2/3,
+            "x"/"y"/"z", or (RAS+) "sagittal"/"coronal"/"axial"/"horizontal".
+
+        Returns
+        -------
+        SlicePackage
         """
+        check_sitk_image(image)
         if image.GetDimension() != 3:
             raise ValueError("image must be a 3D image.")
         axis_index = _resolve_axis_index(axis)  # 0-indexed; used only for local array indexing below
@@ -900,6 +1232,18 @@ class SlicePackageSet:
     """
 
     def __init__(self, packages=None):
+        """Create a new SlicePackageSet.
+
+        Parameters
+        ----------
+        packages : dict of str -> (SlicePackage or SliceGeometry), optional
+            May be empty/None; add more later with `set_package()`. A bare
+            SliceGeometry value is auto-wrapped as a single-slice package.
+
+        Returns
+        -------
+        None
+        """
         self._set_packages(packages if packages is not None else {})
 
     def _set_packages(self, packages):
@@ -915,6 +1259,7 @@ class SlicePackageSet:
 
     @property
     def packages(self):
+        """dict: Shallow copy of the underlying name -> SlicePackage mapping. Settable."""
         return dict(self._packages)
 
     @packages.setter
@@ -923,11 +1268,22 @@ class SlicePackageSet:
 
     @property
     def package_names(self):
+        """list of str: Names of the packages in this set."""
         return list(self._packages.keys())
 
     def set_package(self, name, package):
-        """Add (or replace) a package. `package` may be a SlicePackage or a
-        bare SliceGeometry (automatically wrapped as a single-slice package).
+        """Add (or replace) a package.
+
+        Parameters
+        ----------
+        name : str
+            Single non-empty string identifying the package.
+        package : SlicePackage or SliceGeometry
+            A bare SliceGeometry is automatically wrapped as a single-slice package.
+
+        Returns
+        -------
+        None
         """
         if not isinstance(name, str) or not name:
             raise ValueError("name must be a single non-empty string.")
@@ -938,9 +1294,32 @@ class SlicePackageSet:
         self._packages[name] = package
 
     def remove_package(self, name):
+        """Remove a package by name (a no-op if `name` is not present).
+
+        Parameters
+        ----------
+        name : str
+
+        Returns
+        -------
+        None
+        """
         self._packages.pop(name, None)
 
     def rename_package(self, old_name, new_name):
+        """Rename a package without removing/re-adding it.
+
+        Parameters
+        ----------
+        old_name : str
+            The package's current name.
+        new_name : str
+            Its new name. Must not already be in use.
+
+        Returns
+        -------
+        None
+        """
         if old_name not in self._packages:
             raise ValueError(f"No package named `{old_name}` in this set.")
         if new_name in self._packages:
@@ -949,8 +1328,8 @@ class SlicePackageSet:
 
     @property
     def sample_points(self):
-        """Combined sample points across every package, as a DataFrame with
-        columns package, i, j, k, x, y, z.
+        """pandas.DataFrame: Combined sample points across every package.
+        Columns ``package``, ``i``, ``j``, ``k``, ``x``, ``y``, ``z``.
         """
         if not self._packages:
             return pd.DataFrame(columns=["package", "i", "j", "k", "x", "y", "z"])
@@ -978,9 +1357,18 @@ class SlicePackageSet:
             order (e.g. `{"t": range(10)}` for a 4D image with 10 time
             points). Every combination is sampled. Must be empty/None if
             `image` is 3D.
-        interpolator : SimpleITK interpolator constant
+        interpolator : SimpleITK interpolator constant, optional
             e.g. `sitk.sitkLinear` (default) or `sitk.sitkNearestNeighbor`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Columns `package` (str), one column per name in `extra_index`
+            (if any), `i`, `j`, `k` (int, 0-indexed), `x`, `y`, `z` (float,
+            world coordinates), and `intensity` (float, `NaN` outside
+            `image`'s bounds).
         """
+        check_sitk_image(image)
         extra_index = dict(extra_index) if extra_index else {}
         dim = image.GetDimension()
         if dim < 3 or dim > 5:
@@ -1041,7 +1429,12 @@ class SlicePackageSet:
             the 3 planes may be supplied, but each plane may only be
             specified once. Resulting packages are always named "sagittal",
             "coronal", "axial", regardless of which synonym was used.
+
+        Returns
+        -------
+        SlicePackageSet
         """
+        check_sitk_image(image)
         if not hasattr(coordinates, "items"):
             raise ValueError("coordinates must be a fully named mapping (e.g. a dict).")
         canonical_names = ["sagittal", "coronal", "axial"]
@@ -1058,6 +1451,29 @@ class SlicePackageSet:
             # Pass the original `name`, not axis_index (see from_image_axis for why).
             packages[canonical] = SliceGeometry.from_image_axis(image, name, coordinate)
         return cls(packages)
+
+    @classmethod
+    def from_slice_packages(cls, packages):
+        """Construct a SlicePackageSet from a plain list of SlicePackage
+        objects -- or a single one, not wrapped in a list -- rather than a
+        named dict. Packages are auto-named "package_1", "package_2", etc.,
+        in the order given.
+
+        Parameters
+        ----------
+        packages : SlicePackage, SliceGeometry, or sequence of either
+            Bare SliceGeometry objects are auto-wrapped as single-slice
+            packages, exactly as in the primary constructor.
+
+        Returns
+        -------
+        SlicePackageSet
+        """
+        if isinstance(packages, (SlicePackage, SliceGeometry)):
+            packages = [packages]
+        packages = list(packages)
+        named = {f"package_{i + 1}": p for i, p in enumerate(packages)}
+        return cls(named)
 
     def __repr__(self):
         return f"SlicePackageSet(packages={self.package_names!r})"
