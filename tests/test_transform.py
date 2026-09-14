@@ -68,7 +68,10 @@ def test_read_minc_transform_parses_a_single_linear_block(tmp_path):
         " 0 0 1 7;",
     ])
 
-    t = read_minc_transform(path)
+    # corrected=False: this test is about the block-parsing logic itself,
+    # not the ReadImage_fix()-compatibility conjugation (see its own tests
+    # below), so check the transform exactly as written in the file.
+    t = read_minc_transform(path, corrected=False)
     out = t.TransformPoint((0, 0, 0))
     assert np.allclose(out, [5, 6, 7])
 
@@ -88,7 +91,7 @@ def test_read_minc_transform_parses_a_single_grid_transform_block(tmp_path):
         "Displacement_Volume = grid.mnc;",
     ])
 
-    t = read_minc_transform(xfm_path)
+    t = read_minc_transform(xfm_path, corrected=False)
     out = t.TransformPoint((0, 0, 0))
     assert np.allclose(out, [1, 2, 3])
 
@@ -113,7 +116,7 @@ def test_read_minc_transform_concatenates_multiple_blocks_in_the_correct_order(t
         "Displacement_Volume = grid.mnc;",
     ])
 
-    t = read_minc_transform(xfm_path)
+    t = read_minc_transform(xfm_path, corrected=False)
     assert isinstance(t, sitk.CompositeTransform)
 
     # file order [Linear, Grid]: apply linear (scale by 2) first, then grid (+100 in x)
@@ -131,7 +134,7 @@ def test_read_minc_transform_resolves_displacement_volume_relative_to_xfm_direct
         "Displacement_Volume = somegrid.mnc;",
     ])
 
-    read_minc_transform(xfm_path)  # should not raise
+    read_minc_transform(xfm_path, corrected=False)  # should not raise
 
 
 def test_read_minc_transform_errors_clearly_on_malformed_or_unsupported_input(tmp_path):
@@ -162,6 +165,66 @@ def test_transform_points_routes_xfm_paths_through_read_minc_transform(tmp_path)
         " 0 0 1 3;",
     ])
 
+    # transform_points()/_read_transform_file() call read_minc_transform(path)
+    # with its default corrected=True, so the result is conjugated: for
+    # point (0,0,0), N(T_raw(N(0,0,0))) = N(T_raw(0,0,0)) = N(1,2,3) = (-1,-2,3)
+    # (N negates x/y only -- see _conjugate_minc_native_transform()).
     df = pd.DataFrame({"x": [0], "y": [0], "z": [0]})
     out = transform_points(df, path)
-    assert np.allclose([out["x"][0], out["y"][0], out["z"][0]], [1, 2, 3])
+    assert np.allclose([out["x"][0], out["y"][0], out["z"][0]], [-1, -2, 3])
+
+
+def test_read_minc_transform_default_corrected_conjugates_by_negating_xy(tmp_path):
+    path = str(tmp_path / "t.xfm")
+    _write_test_xfm(path, [
+        "Transform_Type = Linear;",
+        "Linear_Transform =",
+        " 1 0 0 1",
+        " 0 1 0 2",
+        " 0 0 1 3;",
+    ])
+
+    t_raw = read_minc_transform(path, corrected=False)
+    t_corrected = read_minc_transform(path)  # default True
+
+    p = (4, 5, 6)
+    n_p = (-p[0], -p[1], p[2])
+    raw_result = t_raw.TransformPoint(n_p)
+    expected = (-raw_result[0], -raw_result[1], raw_result[2])
+
+    assert np.allclose(t_corrected.TransformPoint(p), expected)
+    # z is never touched by the conjugation
+    assert np.isclose(
+        t_corrected.TransformPoint((0, 0, 9))[2],
+        t_raw.TransformPoint((0, 0, 9))[2],
+    )
+
+
+def test_read_minc_transform_conjugation_applies_to_multi_block_file(tmp_path):
+    grid_path = str(tmp_path / "grid.mnc")
+    vec_img = sitk.Image([3, 3, 3], sitk.sitkVectorFloat64, 3)
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                vec_img.SetPixel((i, j, k), (10.0, 20.0, 30.0))
+    sitk.WriteImage(vec_img, grid_path)
+
+    xfm_path = str(tmp_path / "test.xfm")
+    _write_test_xfm(xfm_path, [
+        "Transform_Type = Linear;",
+        "Linear_Transform =",
+        " 1 0 0 1",
+        " 0 1 0 2",
+        " 0 0 1 3;",
+        "Transform_Type = Grid_Transform;",
+        "Displacement_Volume = grid.mnc;",
+    ])
+
+    t_raw = read_minc_transform(xfm_path, corrected=False)
+    t_corrected = read_minc_transform(xfm_path)
+
+    p = (0.5, 0.5, 0.5)
+    n_p = (-p[0], -p[1], p[2])
+    raw_result = t_raw.TransformPoint(n_p)
+    expected = (-raw_result[0], -raw_result[1], raw_result[2])
+    assert np.allclose(t_corrected.TransformPoint(p), expected)

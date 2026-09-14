@@ -28,7 +28,25 @@ _LINEAR_RE = re.compile(r"Linear_Transform\s*=([^;]+);")
 _GRID_RE = re.compile(r"Displacement_Volume\s*=\s*([^;]+);")
 
 
-def read_minc_transform(path):
+def _conjugate_minc_native_transform(t):
+    """Wrap a MINC-native-space transform t as N . t . N, where N negates
+    x/y (the same fixed operation orientation_correction() applies to image
+    headers), so it operates correctly on points from ReadImage_fix()-
+    corrected images instead of raw-MINC-native ones. N is its own inverse
+    (zero translation, diag(-1,-1,1) matrix), and sitk.CompositeTransform
+    applies the *last*-in-list transform first, so [N, t, N] computes
+    N(t(N(point))) -- verified directly against a real registration (see
+    CLAUDE.md): all 8 real anatomical labels checked land on the correct
+    target label with this conjugation, and land on the wrong one without
+    it.
+    """
+    n = sitk.AffineTransform(3)
+    n.SetMatrix([-1, 0, 0, 0, -1, 0, 0, 0, 1])
+    n.SetTranslation([0, 0, 0])
+    return sitk.CompositeTransform([n, t, n])
+
+
+def read_minc_transform(path, corrected=True):
     """Read a MINC transform (.xfm) file as a SimpleITK transform.
 
     Parses an MNI transform file directly (no dependency beyond what this
@@ -52,13 +70,32 @@ def read_minc_transform(path):
     ----------
     path : str
         Path to a .xfm file.
+    corrected : bool, optional
+        If True (the default), the parsed transform is conjugated so it
+        operates correctly on points from `ReadImage_fix()`-corrected
+        images -- which is what every tidy DataFrame this package produces
+        (`slice_image()`, `slice_grid()`, `slice_contours()`, ...) actually
+        contains. This matters because a .xfm file's own matrix/
+        displacement values are defined in MINC's *native* coordinate
+        convention (the same one `orientation_correction()` corrects
+        images out of), not the corrected one -- confirmed directly: a real
+        registration transform applied to points from correctly-oriented
+        images landed on the wrong anatomical label entirely without this
+        conjugation, and matched exactly with it. Set `corrected=False` to
+        get the transform exactly as written in the file (its native-MINC
+        form), e.g. to compare against another MINC-native tool's own
+        computation, or to apply it directly to points from a plainly-read
+        (not `ReadImage_fix()`-corrected) MINC image.
 
     Returns
     -------
     SimpleITK.Transform
-        A single ``AffineTransform`` or ``DisplacementFieldTransform`` if
-        `path` has exactly one block, or a ``CompositeTransform`` (applying
-        the blocks in file order) if it has more than one.
+        With `corrected=False`: a single `AffineTransform` or
+        `DisplacementFieldTransform` if `path` has exactly one block, or a
+        `CompositeTransform` (applying the blocks in file order) if it has
+        more than one. With `corrected=True` (default): the same, wrapped
+        in an outer `CompositeTransform` that conjugates it by a fixed
+        x/y-negating `AffineTransform`.
     """
     with open(path) as f:
         text = f.read()
@@ -107,13 +144,17 @@ def read_minc_transform(path):
             )
 
     if len(transforms) == 1:
-        return transforms[0]
+        result = transforms[0]
+    else:
+        # File blocks are meant to apply in file order [T1, T2, ...];
+        # sitk.CompositeTransform applies the *last*-listed transform
+        # first, so the list must be given in reverse (verified with a
+        # non-commuting synthetic case; see CLAUDE.md).
+        result = sitk.CompositeTransform(list(reversed(transforms)))
 
-    # File blocks are meant to apply in file order [T1, T2, ...];
-    # sitk.CompositeTransform applies the *last*-listed transform first, so
-    # the list must be given in reverse (verified with a non-commuting
-    # synthetic case; see CLAUDE.md).
-    return sitk.CompositeTransform(list(reversed(transforms)))
+    if not corrected:
+        return result
+    return _conjugate_minc_native_transform(result)
 
 
 def transform_points(df, transform, invert=False, x_col="x", y_col="y", z_col="z"):

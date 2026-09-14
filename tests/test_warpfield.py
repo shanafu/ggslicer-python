@@ -104,7 +104,7 @@ def test_raw_vector_image_and_displacement_field_transform_give_identical_result
     assert np.allclose(arrows_image_form["xend"], arrows_transform_form["xend"])
 
 
-def test_warp_given_as_xfm_path_matches_equivalent_transform_object(tmp_path):
+def test_warp_given_as_xfm_path_matches_equivalent_conjugated_transform_object(tmp_path):
     path = str(tmp_path / "t.xfm")
     _write_test_xfm(path, [
         "Transform_Type = Linear;",
@@ -115,9 +115,14 @@ def test_warp_given_as_xfm_path_matches_equivalent_transform_object(tmp_path):
     ])
 
     image = _make_image((10, 10, 3))
+    # A .xfm path routes through read_minc_transform()'s default
+    # corrected=True (see transform.py), which conjugates the file's raw
+    # translation (2, -1, 0) by negating x/y: for a pure translation, this
+    # is equivalent to just negating the translation vector's x/y
+    # components, i.e. (-2, 1, 0).
     arrows_path = slice_warp_arrows(image, axis="axial", coordinate=0, warp=path, spacing=3)
 
-    t = sitk.TranslationTransform(3, (2, -1, 0))
+    t = sitk.TranslationTransform(3, (-2, 1, 0))
     arrows_transform = slice_warp_arrows(image, axis="axial", coordinate=0, warp=t, spacing=3)
 
     assert np.allclose(arrows_path["xend"], arrows_transform["xend"])

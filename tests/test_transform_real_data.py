@@ -46,7 +46,9 @@ def test_read_minc_transform_on_a_real_single_block_affine_xfm_matches_sitk_read
     m5 = testdata_dir / "mouse_5"
     path = str(m5 / "affine" / "MICe_DSURQE_affine.xfm")
 
-    via_parser = read_minc_transform(path)
+    # corrected=False: comparing the raw parser's output against
+    # sitk.ReadTransform()'s own (also raw, unconjugated) parsing.
+    via_parser = read_minc_transform(path, corrected=False)
     via_read_transform = sitk.ReadTransform(path)
 
     np.testing.assert_allclose(via_parser.GetParameters(), via_read_transform.GetParameters(), atol=1e-8)

@@ -40,21 +40,23 @@ def test_slice_image_with_human_1s_annotation_uses_nearest_neighbor_by_name(test
 
 
 def test_slice_image_works_correctly_on_both_minc_and_nifti_loaded_versions_of_the_same_template(testdata_dir):
-    # Note: ReadImage_fix()'s orientation_correction() is a display-orientation fix
-    # (it mirrors the pixel data and derives a new origin from the volume's own
-    # extent), not a true world-coordinate registration between formats. For this
-    # fixture, the MINC-corrected origin and the NIfTI file's own stored origin
-    # genuinely differ by more than a rounding error along y (the brain isn't
-    # vertically centered in the volume), so the two are not expected to land on
-    # identical world coordinates for the same nominal slice -- only verified here
-    # is that both load into a consistent RAS+ (positive x/y) orientation and
-    # sample correctly through the new high-level API.
+    # ReadImage_fix()'s orientation_correction() corrects MINC's header
+    # (origin/direction) so it describes the same real-world locations an
+    # independently-converted NIfTI file of the same anatomy does --
+    # verified directly (mincheader/fslhd ground truth; see CLAUDE.md and
+    # test_io.py) that this now matches *exactly*, not just in sign
+    # convention. An earlier version of this test/comment assumed a
+    # genuine, expected mismatch here ("the brain isn't vertically
+    # centered") -- that was actually the bug this fix addresses, not a
+    # real anatomical asymmetry.
     base = testdata_dir / "human_1"
     mnc = ReadImage_fix(str(base / "mni_icbm152_t1_tal_nlin_sym_09b_hires.mnc"))
     nii = ReadImage_fix(str(base / "mni_icbm152_t1_tal_nlin_sym_09b_hires.nii"))
 
     assert all(v > 0 for v in mnc.GetOrigin()[:2])
     assert all(v > 0 for v in nii.GetOrigin()[:2])
+    assert np.allclose(mnc.GetOrigin(), nii.GetOrigin())
+    assert np.allclose(mnc.GetDirection(), nii.GetDirection())
 
     out_mnc = slice_image(mnc, axis="axial", coordinate=mnc.GetOrigin()[2])
     out_nii = slice_image(nii, axis="axial", coordinate=nii.GetOrigin()[2])
@@ -63,6 +65,12 @@ def test_slice_image_works_correctly_on_both_minc_and_nifti_loaded_versions_of_t
     assert len(out_nii) == 394 * 466
     assert not out_mnc["value"].isna().all()
     assert not out_nii["value"].isna().all()
+
+    # since the two now share identical geometry, sampling the same nominal
+    # slice should give near-identical intensities.
+    valid = out_mnc["value"].notna() & out_nii["value"].notna()
+    corr = np.corrcoef(out_mnc.loc[valid, "value"], out_nii.loc[valid, "value"])[0, 1]
+    assert corr > 0.999
 
 
 def test_mouse_1s_mask_column_is_usable_for_tidy_side_filtering(testdata_dir):
