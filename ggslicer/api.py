@@ -17,17 +17,14 @@ Three layers, each a thin wrapper over the one below:
 from __future__ import annotations
 
 import itertools
-import re
 
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
-from ._utils import check_sitk_image
+from ._utils import check_sitk_image, discrete_data_names, _matches_discrete_name
 from .geometry import SliceGeometry, SlicePackage, SlicePackageSet
 from .io import ReadImage_fix
-
-_TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _as_slice_package_set(x):
@@ -42,35 +39,12 @@ def _as_slice_package_set(x):
     raise ValueError("geometry must be a SliceGeometry, SlicePackage, or SlicePackageSet object.")
 
 
-def discrete_data_names():
-    """The default set of image names treated as discrete (categorical) data.
-
-    Used by :func:`sample_images`/:func:`slice_image` to decide which images
-    (masks, labels, atlases) always sample with nearest-neighbor
-    interpolation, regardless of the `interpolator` requested for everything
-    else. Matching is by whole token (splitting the image's name on runs of
-    non-alphanumeric characters), case-insensitively -- so "brain_mask"
-    matches (token "mask") but "landmasking_score" does not (no token equals
-    a discrete name exactly).
-
-    Returns
-    -------
-    list of str
-    """
-    return [
-        "mask", "label", "labels", "segmentation", "segmentations", "atlas",
-        "seg", "aseg", "aparc", "parcellation", "parcellations", "parcels",
-        "roi", "rois", "annotation", "annotations", "regions",
-    ]
-
-
 def _resolve_interpolator(name, interpolator, discrete_names):
     """Nearest-neighbor if any whole token of `name` matches `discrete_names`
-    (case-insensitively), otherwise `interpolator` unchanged.
+    (case-insensitively; see _matches_discrete_name() in _utils.py, shared
+    with suggest_contour_levels()), otherwise `interpolator` unchanged.
     """
-    tokens = [t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t]
-    discrete_lower = {d.lower() for d in discrete_names}
-    if any(t in discrete_lower for t in tokens):
+    if _matches_discrete_name(name, discrete_names):
         return sitk.sitkNearestNeighbor
     return interpolator
 
