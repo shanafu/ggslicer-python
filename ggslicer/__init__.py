@@ -5,3 +5,4 @@ from .api import discrete_data_names, sample_images, build_slice_geometry, slice
 from .contours import slice_contours, slice_label_contours
 from .grid import slice_grid, slice_grid_layers
 from .transform import read_minc_transform, transform_points
+from .warpfield import slice_warp_arrows, slice_warp_arrows_layer
